@@ -1,4 +1,33 @@
 # 说明
+
+## 三端同步（服务器 ↔ GitHub ↔ 本地）
+
+此项目通过 GitHub 在服务器和本地之间同步：
+
+```
+服务器 /home/huyanhan/FGVC/Qwenedit/src  ↔  GitHub  ↔  本地 D:\seu-server
+```
+
+### 日常同步流程
+
+无论在哪端修改代码，按此流程操作：
+
+```bash
+git pull          # 1. 拉取最新代码（修改前先执行）
+# ... 修改文件 ...
+git add .         # 2. 暂存所有修改
+git commit -m "改动说明"  # 3. 提交
+git push          # 4. 推送到 GitHub
+```
+
+### 注意事项
+
+- **修改前先 `git pull`**，避免冲突
+- **改完及时 `git push`**，否则另一端拉不到更新
+- **两端同时改了同一文件** → 后 push 的一端先 `git pull` → 解决冲突 → 重新 `git add/commit/push`
+
+---
+
 CUDA_VISIBLE_DEVICES=2,3 python inferv5.py
 v1-v4 属于测试版本
 v5 使用qwen-image-edit 实现了单图输入，视角切换，环境变换的功能
