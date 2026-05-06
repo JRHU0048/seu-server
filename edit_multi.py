@@ -40,7 +40,7 @@ CFG = 3.5
 SEED = 42
 SIZE = 384
 
-SKIP_UPTO = 0  # 设为 0 不跳过任何类别
+SKIP_UPTO = 6  # 设为 0 不跳过任何类别
 
 # =====================================================
 # 模型加载 + cache-dit 加速
@@ -80,9 +80,9 @@ def run():
     class_folders = sorted(os.listdir(INPUT_ROOT))
 
     for cls in class_folders:
-        # if is_skipped_class(cls, max_class=SKIP_UPTO):
-        #     print("Skip class:", cls)
-        #     continue
+        if is_skipped_class(cls, max_class=SKIP_UPTO):
+            print("Skip class:", cls)
+            continue
 
         input_dir = os.path.join(INPUT_ROOT, cls)
         output_dir = os.path.join(OUTPUT_ROOT, cls)

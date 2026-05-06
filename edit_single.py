@@ -26,7 +26,7 @@ os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 INPUT_ROOT = "/home/huyanhan/data/CUB_200_2011/images/train"
 OUTPUT_ROOT = "/home/huyanhan/data/CUB_200_2011/qwen_output/train"
-MODEL_ID = "./Qwen-Image-Edit"
+MODEL_ID = "../Qwen-Image-Edit"
 
 os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
