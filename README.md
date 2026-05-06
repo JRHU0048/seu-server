@@ -8,41 +8,38 @@
 
 ```
 ├── core/                          # Multi-Agent 框架核心
-│   ├── agent.py                   #   BaseAgent 基类（load/run/unload 生命周期）
-│   ├── generator.py               #   GeneratorAgent — Qwen-Image-Edit-2511
-│   ├── critic.py                  #   CriticAgent — Qwen VLM 结构化评估
-│   ├── refiner.py                 #   RefinerAgent — 评估反馈 → prompt 改进
-│   ├── memory.py                  #   MemoryModule — 经验记忆 / 断点续跑
-│   └── orchestrator.py            #   OrchestratorAgent — Pipeline 编排器
+│   ├── agent.py                   #   BaseAgent 基类
+│   ├── generator.py               #   GeneratorAgent
+│   ├── critic.py                  #   CriticAgent — 结构化评估
+│   ├── refiner.py                 #   RefinerAgent — prompt 改进
+│   ├── memory.py                  #   MemoryModule — 经验记忆
+│   └── orchestrator.py            #   Pipeline 编排器（3 种重试策略）
 ├── tasks/                         # 任务配置（可插拔）
 │   ├── base.py                    #   TaskConfig 基类
-│   ├── cub_bird.py                #   CUB-200-2011 (200 classes)
-│   ├── stanford_car.py            #   Stanford Cars (196 cls, TODO)
-│   ├── stanford_dog.py            #   Stanford Dogs (120 cls, TODO)
-│   └── nabird.py                  #   NABirds (555 cls, TODO)
-├── experiments/                   # 实验入口
-│   ├── run_pipeline.py            #   CLI 入口（参数可配）
-│   └── run_baselines.py           #   基线对比（Phase 2）
+│   ├── cub_bird.py                #   CUB-200-2011 (200 cls) ✅
+│   ├── stanford_car.py            #   Stanford Cars (196 cls) 🔜
+│   ├── stanford_dog.py            #   Stanford Dogs (120 cls) 🔜
+│   └── nabird.py                  #   NABirds (555 cls) 🔜
+├── experiments/                   # 实验系统
+│   ├── run_pipeline.py            #   CLI 入口
+│   ├── run_baselines.py           #   基线对比实验
+│   ├── metrics.py                 #   指标计算（FID / CLIP / Identity）
+│   ├── analysis.py                #   错误分类 / 报告生成
+│   ├── visualize.py               #   论文级图表（5 类）
+│   ├── paper_output.py            #   LaTeX / 统计检验 / 补充材料
+│   └── configs/                   #   Baseline 配置
 ├── output/                        # 输出
 │   ├── logs/                      #   运行日志
-│   └── memory/                    #   经验记忆（JSON）
+│   ├── memory/                    #   经验记忆
+│   ├── metrics/                   #   指标缓存
+│   ├── baselines/                 #   基线实验结果
+│   ├── figures/                   #   图表
+│   └── paper/                     #   论文材料
 ├── edit_single.py                 # [保留] 旧版单图脚本
 ├── edit_multi.py                  # [保留] 旧版三图脚本
 ├── pipeline.py                    # [保留] 旧版 pipeline
 ├── tools.py                       # 共享工具函数
 ├── prompts.py                     # 共享 prompt 库
-├── experiments/                   # 实验系统
-│   ├── run_pipeline.py            #   CLI 入口（参数可配）
-│   ├── run_baselines.py           #   基线对比实验入口
-│   ├── metrics.py                 #   指标计算（FID / CLIP / Identity）
-│   ├── analysis.py                #   错误分类 / 报告生成
-│   └── configs/                   #   Baseline 配置定义
-├── output/                        # 输出
-│   ├── logs/                      #   运行日志
-│   ├── memory/                    #   经验记忆（JSON）
-│   ├── metrics/                   #   指标缓存
-│   ├── baselines/                 #   基线实验结果
-│   └── report/                    #   实验报告
 ├── archive/                       # 废弃实验版本
 ├── requirements.txt
 └── README.md
@@ -92,6 +89,16 @@
   └── Memory 记录经验 ──→ 下一张
 ```
 
+### 重试策略
+
+Orchestrator 支持 3 种重试策略（通过 `retry_strategy` 配置）：
+
+| 策略 | 行为 | 适用场景 |
+|------|------|----------|
+| `fixed`（默认） | 固定重试 N 次 | 标准评估 |
+| `adaptive` | 连续 2 次分数下降则提前停止 | 节约资源 |
+| `aggressive` | 每轮阈值降低 0.5 | 提高接受率 |
+
 ## 快速开始
 
 ### 环境安装
@@ -124,19 +131,22 @@ CUDA_VISIBLE_DEVICES=2,3 python experiments/run_pipeline.py \
 python experiments/run_pipeline.py --list-tasks
 ```
 
-### CLI 参数
+代码完善至 Phase 3，项目已达到完整状态：
 
-| 参数 | 默认 | 说明 |
-|------|------|------|
-| `--task` | `cub_bird` | 任务配置 |
-| `--input` | (任务默认) | 覆盖输入路径 |
-| `--output` | (任务默认) | 覆盖输出路径 |
-| `--threshold` | 7.0 | 最低接受分数 |
-| `--max-retries` | 3 | 最大重试次数 |
-| `--use-critic` | False | 启用 Critic 评估 |
-| `--gen-model` | (任务默认) | 覆盖生成模型路径 |
-| `--eval-model` | (任务默认) | 覆盖评估模型路径 |
-| `--skip-upto` | 0 | 跳过前 N 个类别 |
+- **Agent 框架**（`core/`）：BaseAgent → Generator → Critic → Refiner → Memory → Orchestrator
+- **任务系统**（`tasks/`）：基类 + CUB ✅ + 3 个预留
+- **实验系统**（`experiments/`）：Pipeline 运行 → 基线对比 → 指标计算 → 错误分析 → 可视化 → 论文输出
+- **旧版脚本**保留兼容
+
+在服务器上 `git pull` 后按以下流程操作即可开展实验：
+
+```
+1. 单次运行:   python experiments/run_pipeline.py
+2. 基线对比:   python experiments/run_baselines.py --all
+3. 指标计算:   python experiments/run_baselines.py --all --metrics-only
+4. 可视化:     python experiments/visualize.py --memory <path> --baselines-dir <path>
+5. 论文输出:   python experiments/paper_output.py --all --baselines-dir <path> --memory <path>
+```
 
 ## 基线对比实验
 

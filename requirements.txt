@@ -11,3 +11,5 @@ opencv-python
 cache-dit
 torchmetrics>=1.0.0           # FID, LPIPS 指标
 # clip 指标依赖 transformers 已有
+matplotlib>=3.5.0              # 可视化
+scipy>=1.7.0                   # 统计检验
