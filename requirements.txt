@@ -9,3 +9,5 @@ safetensors
 pillow
 opencv-python
 cache-dit
+torchmetrics>=1.0.0           # FID, LPIPS 指标
+# clip 指标依赖 transformers 已有

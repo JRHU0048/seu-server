@@ -31,6 +31,18 @@
 ├── pipeline.py                    # [保留] 旧版 pipeline
 ├── tools.py                       # 共享工具函数
 ├── prompts.py                     # 共享 prompt 库
+├── experiments/                   # 实验系统
+│   ├── run_pipeline.py            #   CLI 入口（参数可配）
+│   ├── run_baselines.py           #   基线对比实验入口
+│   ├── metrics.py                 #   指标计算（FID / CLIP / Identity）
+│   ├── analysis.py                #   错误分类 / 报告生成
+│   └── configs/                   #   Baseline 配置定义
+├── output/                        # 输出
+│   ├── logs/                      #   运行日志
+│   ├── memory/                    #   经验记忆（JSON）
+│   ├── metrics/                   #   指标缓存
+│   ├── baselines/                 #   基线实验结果
+│   └── report/                    #   实验报告
 ├── archive/                       # 废弃实验版本
 ├── requirements.txt
 └── README.md
@@ -125,6 +137,60 @@ python experiments/run_pipeline.py --list-tasks
 | `--gen-model` | (任务默认) | 覆盖生成模型路径 |
 | `--eval-model` | (任务默认) | 覆盖评估模型路径 |
 | `--skip-upto` | 0 | 跳过前 N 个类别 |
+
+## 基线对比实验
+
+运行 5 组对比实验，系统比较反馈循环的效果：
+
+| Baseline | Critic | Retries | 目标 |
+|----------|--------|---------|------|
+| `no_feedback` | ✗ | 0 | 单次生成的基线质量 |
+| `multi_attempt` | ✗ | 3 | 纯随机性（同 prompt 重复） |
+| `critic_threshold_6` | ✓ | 3 | 低阈值效果 |
+| `critic_threshold_7` | ✓ | 3 | **默认方法** |
+| `critic_threshold_8` | ✓ | 3 | 高阈值效果 |
+
+### 运行
+
+```bash
+# 查看实验计划（不实际运行）
+python experiments/run_baselines.py --task cub_bird --dry-run
+
+# 运行单个 baseline
+CUDA_VISIBLE_DEVICES=2,3 python experiments/run_baselines.py \
+    --baseline no_feedback
+
+# 运行全部
+CUDA_VISIBLE_DEVICES=2,3 python experiments/run_baselines.py --all
+
+# 只计算指标（跳过生成，用于已有输出的重算）
+CUDA_VISIBLE_DEVICES=2,3 python experiments/run_baselines.py \
+    --all --metrics-only
+```
+
+### 指标说明
+
+| 指标 | 来源 | 含义 | 方向 |
+|------|------|------|------|
+| **FID** | torchmetrics + InceptionV3 | 生成分布与真实分布的距离 | ↓ 低更好 |
+| **CLIP Score** | openai/clip-vit-base-patch32 | 图片与任务 prompt 的对齐度 | ↑ 高更好 |
+| **Identity Score** | CriticAgent 采样评估 | 主体身份保持程度 | ↑ 高更好 |
+| **修复率** | Memory 错误统计 | 各类型错误被修复的比例 | ↑ 高更好 |
+
+### 分析报告
+
+实验完成后生成分析的 Markdown 报告：
+
+```bash
+# 错误分类统计
+python experiments/analysis.py --memory output/baselines/cub_bird/critic_threshold_7/memory.json
+
+# 完整报告
+python experiments/analysis.py \
+    --memory <path> \
+    --baselines-dir output/baselines/cub_bird \
+    --output output/report
+```
 
 ## 添加新数据集
 
