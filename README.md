@@ -5,8 +5,9 @@
 ## 项目结构
 
 ```
-├── edit_single.py              # [当前] 单图输入 + Qwen-Image-Edit + cache-dit
-├── edit_multi.py               # [当前] 三图输入 + Qwen-Image-Edit-2511 + cache-dit
+├── pipeline.py                 # [新增] Multi-Agent Pipeline（生成 + 评估 + 反馈循环）
+├── edit_single.py              # 单图输入 + Qwen-Image-Edit + cache-dit
+├── edit_multi.py               # 三图输入 + Qwen-Image-Edit-2511 + cache-dit
 ├── prompts.py                  # 所有 prompt 统一管理
 ├── tools.py                    # 共享工具函数
 ├── archive/                    # 废弃的实验版本
@@ -58,6 +59,9 @@ CUDA_VISIBLE_DEVICES=2,3 python edit_single.py
 
 # 三图输入（Qwen-Image-Edit-2511）
 CUDA_VISIBLE_DEVICES=2,3 python edit_multi.py
+
+# Multi-Agent Pipeline（生成 + 评估 + 反馈重试）
+CUDA_VISIBLE_DEVICES=2,3 python pipeline.py
 ```
 
 ## 模型对比
@@ -66,6 +70,33 @@ CUDA_VISIBLE_DEVICES=2,3 python edit_multi.py
 |------|------|------|------|------|
 | `edit_single.py` | Qwen-Image-Edit | 单张图片 | 60° 视角变换 | cache-dit |
 | `edit_multi.py` | Qwen-Image-Edit-2511 | 三张图片（滑动窗口） | 60° 视角变换 + 背景替换 | cache-dit |
+| `pipeline.py` | 双 Agent | 三张图片（滑动窗口） | 自适应：评估不通过则重试 | cache-dit |
+
+## Multi-Agent Pipeline
+
+`pipeline.py` 搭建了一套双 Agent 协作流程：
+
+```
+Agent 1 (Generator):  Qwen-Image-Edit-2511 → 生成新视角
+       ↓
+Agent 2 (Evaluator):  Qwen VLM → 量化评分 (0~10) + 指出问题
+       ↓
+Score ≥ 7.0?  ──Yes──→ 保存结果，继续下一张
+       │No
+  重试 < 3次? ──Yes──→ 将评估意见注入 prompt → 重新生成
+       │No
+       └──→ 跳过当前图片
+```
+
+**关键参数**（脚本顶部修改）：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `THRESHOLD` | 7.0 | 最低接受分数 |
+| `MAX_RETRIES` | 3 | 最大重试次数 |
+| `EVAL_MODEL_ID` | `../Qwen2.5-VL-7B-Instruct` | 评估模型路径 |
+
+> **注意**：评估模型需要额外 ~16GB 显存。如果显存不足，可在 `run_pipeline()` 中将 `evaluator_model, evaluator_proc = load_evaluator()` 这行注释掉，pipeline 会自动跳过评估（所有生成直接接受）。
 
 ## 推理参数说明
 

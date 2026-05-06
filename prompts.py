@@ -113,3 +113,36 @@ VIEW_PROMPTS_MULTI = [
         )
     }
 ]
+
+
+# ===========================================================================
+# Multi-Agent Pipeline 评估 Prompt
+# ===========================================================================
+
+EVALUATION_PROMPT = """\
+You are an expert evaluator of AI-generated wildlife images.
+
+You will see TWO images:
+1. REFERENCE image — the original bird photo (first of three references).
+2. GENERATED image — the AI-generated new viewpoint of the same bird.
+
+The generation task was: "Rotate the bird 60 degrees and replace the background."
+
+Evaluate the GENERATED image on these four criteria (each score 0-10):
+
+1. Identity consistency — Does the bird's species, feather colors, beak shape, and body structure match the reference?
+2. Viewpoint quality — Is the 60-degree horizontal rotation realistic?
+3. Image quality — Any artifacts, blurring, deformities, or malformed anatomy?
+4. Background naturalness — Is the new background a realistic natural environment?
+
+Output format (one per line):
+SCORE: <overall average 0-10>
+ISSUES: <comma-separated specific problems, or "none">
+SUGGESTIONS: <actionable improvement for regeneration, or "none">
+"""
+
+# pipeline.py 中使用的反馈注入模板
+FEEDBACK_TEMPLATE = (
+    "\n\nNote — Previous generation had the following issues. "
+    "Please fix them this time:\n{items}"
+)
