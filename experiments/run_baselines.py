@@ -209,6 +209,8 @@ def parse_args():
                         help="Evaluator model ID")
     parser.add_argument("--output", default="output/baselines",
                         help="Results aggregation directory")
+    parser.add_argument("--skip-upto", type=int, default=None,
+                        help="Skip classes with numeric prefix <= N (e.g. --skip-upto 53 skips 001-053)")
     return parser.parse_args()
 
 
@@ -216,7 +218,10 @@ def main():
     args = parse_args()
 
     # 加载任务
-    task = get_task(args.task)
+    task_config_dict = {}
+    if args.skip_upto is not None:
+        task_config_dict["skip_upto"] = args.skip_upto
+    task = get_task(args.task, **task_config_dict)
 
     # 确定要运行的 baselines
     if args.baseline:
