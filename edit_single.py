@@ -1,5 +1,5 @@
 """
-单图输入 —— 使用 Qwen-Image-Edit 生成新视角
+单图输入 —— 使用 Qwen-Image-Edit-2511 生成新视角（与多图输入同模型）
 
 功能：
   - 遍历 CUB-200-2011 训练集所有类别
@@ -13,7 +13,7 @@
 import os
 from pathlib import Path
 import torch
-from diffusers import QwenImageEditPipeline
+from diffusers import QwenImageEditPlusPipeline
 import cache_dit
 
 from tools import get_all_images, load_image, is_skipped_class
@@ -26,7 +26,7 @@ os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 INPUT_ROOT = "/home/huyanhan/data/CUB_200_2011/images/train"
 OUTPUT_ROOT = "/home/huyanhan/data/CUB_200_2011/qwen_output/train"
-MODEL_ID = "../Qwen-Image-Edit"
+MODEL_ID = "../Qwen-Image-Edit-2511"
 
 os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
@@ -45,9 +45,9 @@ SKIP_UPTO = 27
 # =====================================================
 # 模型加载 + cache-dit 加速
 # =====================================================
-print("Loading Qwen-Image-Edit ...")
+print("Loading Qwen-Image-Edit-2511 ...")
 
-pipe = QwenImageEditPipeline.from_pretrained(
+pipe = QwenImageEditPlusPipeline.from_pretrained(
     MODEL_ID,
     torch_dtype=DTYPE,
     device_map="balanced",
@@ -70,6 +70,7 @@ cache_options = {
 }
 cache_dit.enable_cache(pipe, **cache_options)
 
+pipe.set_progress_bar_config(disable=None)
 print("Loaded.")
 
 # =====================================================
@@ -104,11 +105,12 @@ def run():
             for vp in VIEW_PROMPTS_SINGLE:
                 with torch.inference_mode():
                     out = pipe(
-                        image=input_img,
+                        image=[input_img],          # 2511 模型需要 list 输入
                         prompt=vp["prompt"],
                         negative_prompt=NEG_PROMPT,
                         true_cfg_scale=CFG,
                         num_inference_steps=STEPS,
+                        guidance_scale=1.0,
                         generator=torch.manual_seed(SEED),
                     ).images[0]
 

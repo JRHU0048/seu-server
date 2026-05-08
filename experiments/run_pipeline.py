@@ -30,7 +30,7 @@ import argparse
 # 将项目根目录加入 path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import OrchestratorAgent
+from core import OrchestratorAgent, SerialPipelineOrchestrator
 from tasks import get_task, list_tasks
 
 
@@ -51,6 +51,10 @@ def parse_args():
                         help="Maximum retry attempts per image")
     parser.add_argument("--use-critic", action="store_true",
                         help="Enable CriticAgent evaluation (requires evaluator model)")
+    parser.add_argument("--serial", action="store_true",
+                        help="Use serial pipeline (generator and critic take turns in VRAM)")
+    parser.add_argument("--num-rounds", type=int, default=None,
+                        help="Number of agent-level rounds for serial pipeline (default: 3)")
     parser.add_argument("--memory-path", type=str, default=None,
                         help="Path to memory JSON file")
     parser.add_argument("--log-file", type=str, default=None,
@@ -130,10 +134,19 @@ def main():
     print(f"Threshold:    {pipeline_config['threshold']}")
     print(f"Max retries:  {pipeline_config['max_retries']}")
     print(f"Use critic:   {pipeline_config['use_critic']}")
+    print(f"Serial mode:  {args.serial}")
+    if args.serial:
+        print(f"Num rounds:   {pipeline_config.get('num_rounds', 3)}")
     print()
 
     # 运行
-    orchestrator = OrchestratorAgent(pipeline_config)
+    if args.serial:
+        print("Mode: Serial Pipeline (Generator + Critic take turns in VRAM)")
+        if args.num_rounds:
+            pipeline_config["num_rounds"] = args.num_rounds
+        orchestrator = SerialPipelineOrchestrator(pipeline_config)
+    else:
+        orchestrator = OrchestratorAgent(pipeline_config)
     orchestrator.run_pipeline(task)
 
 

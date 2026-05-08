@@ -7,7 +7,7 @@ from .generator import GeneratorAgent
 from .critic import CriticAgent, EvaluationResult
 from .refiner import RefinerAgent
 from .memory import MemoryModule
-from .orchestrator import OrchestratorAgent
+from .orchestrator import OrchestratorAgent, SerialPipelineOrchestrator
 
 __all__ = [
     "BaseAgent",
@@ -17,4 +17,5 @@ __all__ = [
     "RefinerAgent",
     "MemoryModule",
     "OrchestratorAgent",
+    "SerialPipelineOrchestrator",
 ]

@@ -311,3 +311,321 @@ class OrchestratorAgent(BaseAgent):
                 cache_dit.clear_cache()
         except ImportError:
             pass
+
+
+# ═══════════════════════════════════════════════════════════════
+# SerialPipelineOrchestrator
+# ═══════════════════════════════════════════════════════════════
+
+class SerialPipelineOrchestrator(BaseAgent):
+    """
+    Agent级串行Pipeline — Generator和Critic分时占用显存，不同时加载。
+
+    流程（多轮agent级迭代）:
+      Round 1:
+        Phase 1: GENERATE 全部图片（仅 Generator 在显存）
+        Phase 2: EVALUATE 全部生成图（仅 Critic 在显存）
+        Phase 3: 聚合跨图片反馈 → 更新生成 prompt
+      Round 2..N:
+        重复 Phase 1→Phase 2→Phase 3，携带上一轮聚合的全局反馈
+
+    与 OrchestratorAgent 的关键区别:
+    - Generator 和 Critic 永不共存于显存
+    - 反馈以 agent 级别跨所有图片聚合，而非逐图即时反馈
+    - 多轮迭代在数据集级别进行，同一 prompt 用于所有图片
+    """
+
+    def __init__(self, config: dict):
+        super().__init__(config)
+        self.generator = GeneratorAgent(config)
+        self.critic = None
+        self.refiner = RefinerAgent(config)
+        self.memory = MemoryModule(
+            config.get("memory_path", "output/memory/memory.json")
+        )
+        self._log_file = config.get("log_file", "output/logs/pipeline.log")
+        Path(self._log_file).parent.mkdir(parents=True, exist_ok=True)
+        self._num_rounds = config.get("num_rounds", 3)
+        self._threshold = config.get("threshold", 7.0)
+
+        self._stats = {
+            "total": 0, "accepted": 0,
+            "round_stats": [],
+        }
+
+    def _load_model(self):
+        self.generator.load()
+
+    def _run_model(self, task):
+        self.run_pipeline(task)
+
+    # ── 主入口 ─────────────────────────────────────────
+
+    def run_pipeline(self, task):
+        self._log("=" * 60)
+        self._log("Serial Pipeline started" + f" — Task: {task.name}")
+        self._log(f"  Num rounds:  {self._num_rounds}")
+        self._log(f"  Threshold:   {self._threshold}")
+        self._log(f"  Use critic:  {self.config.get('use_critic', False)}")
+        self._log(f"  Generator:   {self.config.get('gen_model_id', '')}")
+        self._log(f"  Critic:      {self.config.get('eval_model_id', '')}")
+        self._log("=" * 60)
+
+        use_critic = self.config.get("use_critic", False)
+
+        # Step 1: 扫描所有待处理图片
+        all_items = self._collect_items(task)
+        self._stats["total"] = len(all_items)
+
+        if not all_items:
+            self._log("No items to process. Exiting.")
+            return
+
+        self._log(f"\nTotal images to process: {len(all_items)}")
+        self._log(f"Rounds of agent-level iteration: {self._num_rounds}")
+
+        # 跨轮次聚合反馈（agent-level, 非 per-image）
+        global_feedback = []
+
+        # 最佳结果追踪: {(cls, img_name): {"round": r, "score": s, "image": PIL}}
+        best_per_image = {}
+
+        # ── 多轮迭代 ──
+        for round_idx in range(self._num_rounds):
+            self._log(f"\n{'=' * 60}")
+            self._log(f"  ROUND {round_idx + 1} / {self._num_rounds}")
+            self._log(f"{'=' * 60}")
+
+            # ===== Phase 1: 统一生成（仅 Generator 在显存） =====
+            self._log(f"\n>>> [Phase 1] Generating all {len(all_items)} images ...")
+            self.generator.load()
+
+            round_generated = []  # [(cls, img_name, ref_pil, gen_img)]
+            for idx, item in enumerate(all_items):
+                cls, img_name, input_pils, ref_pil, neg = item
+                prompt = task.build_prompt(global_feedback if round_idx > 0 else None)
+
+                self._log(f"  Gen [{idx + 1}/{len(all_items)}] {cls}/{img_name}")
+                gen_img = self.generator.run(
+                    input_pils, prompt, neg,
+                    seed=self.config.get("seed", 42) + round_idx * 10000 + idx,
+                )
+                round_generated.append((cls, img_name, ref_pil, gen_img))
+
+            # 卸载 Generator → 释放显存
+            self.generator.unload()
+            self._log("  [Phase 1] Generator unloaded — VRAM released.")
+
+            # ===== 无 Critic 模式 =====
+            if not use_critic:
+                self._log(">>> Critic disabled — saving all images directly.")
+                for cls, img_name, _, gen_img in round_generated:
+                    out_dir = os.path.join(task.output_root, cls)
+                    os.makedirs(out_dir, exist_ok=True)
+                    gen_img.save(os.path.join(
+                        out_dir, f"{img_name}_{task.output_suffix}_r{round_idx}.png"
+                    ))
+                self._stats["accepted"] = len(all_items)
+                break  # 一轮就够了
+
+            # ===== Phase 2: 统一评估（仅 Critic 在显存） =====
+            self._log(f">>> [Phase 2] Evaluating all {len(round_generated)} images ...")
+            if self.critic is None:
+                self.critic = CriticAgent(self.config)
+            self.critic.load()
+
+            round_evaluations = []  # [(cls, img_name, gen_img, EvaluationResult)]
+            all_issues = []
+            scores = []
+
+            for idx, (cls, img_name, ref_pil, gen_img) in enumerate(round_generated):
+                self._log(f"  Eval [{idx + 1}/{len(round_generated)}] {cls}/{img_name}")
+                result = self.critic.run(
+                    gen_img, ref_pil,
+                    criteria=task.evaluation_criteria,
+                    category=task.category_name,
+                    task_description=task.task_description,
+                )
+                round_evaluations.append((cls, img_name, gen_img, result))
+                all_issues.extend(result.issues)
+                scores.append(result.global_score)
+
+                # 更新全局最佳
+                key = (cls, img_name)
+                if (key not in best_per_image or
+                        result.global_score > best_per_image[key]["score"]):
+                    best_per_image[key] = {
+                        "round": round_idx,
+                        "score": result.global_score,
+                        "image": gen_img,
+                    }
+
+            self.critic.unload()
+            self._log("  [Phase 2] Critic unloaded — VRAM released.")
+
+            # ===== 保存本轮中间结果 & 记录 Memory =====
+            accepted_count = 0
+            for cls, img_name, gen_img, result in round_evaluations:
+                rounds_dir = os.path.join(task.output_root, cls, "_rounds")
+                os.makedirs(rounds_dir, exist_ok=True)
+                gen_img.save(os.path.join(rounds_dir, f"{img_name}_r{round_idx}.png"))
+
+                is_accepted = result.global_score >= self._threshold
+                if is_accepted:
+                    accepted_count += 1
+                self.memory.record_attempt(
+                    cls, img_name, round_idx, result.global_score,
+                    result.issues[:3], is_accepted,
+                )
+
+            # ===== 本轮统计 =====
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+            self._log(f"\n--- Round {round_idx + 1} Summary ---")
+            self._log(f"  Avg score:    {avg_score:.2f} / 10")
+            self._log(f"  Accepted:     {accepted_count} / {len(scores)}  (threshold={self._threshold})")
+            if all_issues:
+                from collections import Counter
+                top3 = Counter(all_issues).most_common(3)
+                self._log(f"  Top issues:   {[t[0][:60] for t in top3]}")
+
+            self._stats["round_stats"].append({
+                "round": round_idx,
+                "avg_score": round(avg_score, 2),
+                "accepted": accepted_count,
+                "total": len(scores),
+            })
+
+            # ===== Phase 3: 聚合跨图反馈（agent-level） =====
+            if round_idx < self._num_rounds - 1:
+                self._log(">>> [Phase 3] Aggregating cross-image feedback ...")
+                global_feedback = self._aggregate_feedback(round_evaluations, self._threshold)
+                self._log(f"  → {len(global_feedback)} feedback items for round {round_idx + 2}")
+                for fb in global_feedback[:3]:
+                    self._log(f"    - {fb[:120]}")
+
+        # ── 保存最终最佳结果 ──
+        self._log(f"\n>>> Saving best results across {len(best_per_image)} images ...")
+        saved = 0
+        for (cls, img_name), best in best_per_image.items():
+            out_dir = os.path.join(task.output_root, cls)
+            os.makedirs(out_dir, exist_ok=True)
+            best["image"].save(os.path.join(
+                out_dir, f"{img_name}_{task.output_suffix}_best.png"
+            ))
+            saved += 1
+
+        self._stats["accepted"] = saved
+        self._log_stats()
+
+    # ── 数据收集 ────────────────────────────────────────
+
+    def _collect_items(self, task):
+        """扫描数据集，收集所有待处理的 (cls, img_name, input_pils, ref_pil, neg)"""
+        items = []
+        class_folders = sorted(os.listdir(task.input_root))
+        for cls in class_folders:
+            if getattr(task, "skip_class", lambda _: False)(cls):
+                self._log(f"  Skip class: {cls}")
+                continue
+
+            input_dir = os.path.join(task.input_root, cls)
+            output_dir = os.path.join(task.output_root, cls)
+            os.makedirs(output_dir, exist_ok=True)
+
+            images = get_all_images(input_dir)
+            if len(images) < task.min_input_images:
+                self._log(f"  Skip {cls} ({len(images)} < {task.min_input_images} images)")
+                continue
+
+            for inputs in task.iter_inputs(images):
+                img_name = inputs["name"]
+                if self.memory.is_done(cls, img_name):
+                    self._log(f"  {cls}/{img_name} — already done, skip")
+                    continue
+
+                input_pils = [load_image(p, task.image_size) for p in inputs["paths"]]
+                ref_pil = load_image(inputs["paths"][0], task.image_size)
+                items.append((cls, img_name, input_pils, ref_pil, task.neg_prompt))
+
+        return items
+
+    # ── 反馈聚合 ────────────────────────────────────────
+
+    def _aggregate_feedback(self, round_evaluations, threshold):
+        """
+        跨所有图片聚合 agent-level 反馈。
+        策略:
+          1. 提取所有 issues 中的高频模式
+          2. 从低分图片中收集具体的改进建议
+        """
+        from collections import Counter
+
+        all_issues = []
+        low_score_results = []
+
+        for cls, img_name, gen_img, result in round_evaluations:
+            all_issues.extend(result.issues)
+            if result.global_score < threshold:
+                low_score_results.append(result)
+
+        if not low_score_results:
+            return []  # 全部达标 → 无需反馈
+
+        # 高频失败模式
+        issue_counts = Counter(all_issues)
+        top_issues = [iss for iss, _ in issue_counts.most_common(5) if iss]
+
+        feedback = []
+        if top_issues:
+            feedback.append(
+                "Common problems from previous round across ALL images: "
+                + "; ".join(top_issues)
+            )
+
+        # 低分图片的具体反馈（去重）
+        seen = set()
+        for r in low_score_results:
+            for iss in r.issues:
+                if iss and iss not in seen:
+                    feedback.append(f"- {iss}")
+                    seen.add(iss)
+                    if len(feedback) >= 8:
+                        break
+            if len(feedback) >= 8:
+                break
+
+        return feedback[:8]
+
+    # ── 工具 ────────────────────────────────────────────
+
+    def _log(self, msg: str):
+        msg = str(msg)
+        print(msg)
+        with open(self._log_file, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+
+    def _log_stats(self):
+        self._log("\n" + "=" * 60)
+        self._log("Serial Pipeline completed!")
+        self._log(f"  Total items:  {self._stats['total']}")
+        self._log(f"  Best saved:   {self._stats['accepted']}")
+        rounds = self._stats.get("round_stats", [])
+        if rounds:
+            self._log("  Rounds:")
+            for s in rounds:
+                self._log(f"    Round {s['round'] + 1}: avg={s['avg_score']:.2f}, "
+                          f"accepted={s['accepted']}/{s['total']}")
+        self._log("=" * 60)
+
+    def _cleanup(self):
+        if hasattr(self, "generator"):
+            self.generator.unload()
+        if hasattr(self, "critic") and self.critic is not None:
+            self.critic.unload()
+        torch.cuda.empty_cache()
+        try:
+            import cache_dit
+            if hasattr(cache_dit, "clear_cache"):
+                cache_dit.clear_cache()
+        except ImportError:
+            pass
