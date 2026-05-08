@@ -306,6 +306,8 @@ class OrchestratorAgent(BaseAgent):
         torch.cuda.empty_cache()
         try:
             import cache_dit
-            cache_dit.clear_cache()
+            # cache_dit.clear_cache()
+            if hasattr(cache_dit, "clear_cache"):
+                cache_dit.clear_cache()
         except ImportError:
             pass

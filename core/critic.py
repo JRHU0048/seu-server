@@ -52,7 +52,15 @@ Evaluate the GENERATED image on these criteria (each score 0-10):
 
 {criteria_text}
 
-IMPORTANT: Respond ONLY with a valid JSON object, no other text:
+IMPORTANT RULES:
+1. Respond ONLY with a valid JSON object.
+2. Do NOT output markdown.
+3. Do NOT output explanations.
+4. Do NOT output thinking process.
+5. Do NOT use ```json fences.
+6. Output must be directly parsable by json.loads().
+
+Required JSON format:
 {{
     "identity_score": <0-10>,
     "viewpoint_score": <0-10>,
@@ -71,24 +79,38 @@ class CriticAgent(BaseAgent):
 
     def __init__(self, config: dict, model_id: str = None):
         super().__init__(config)
+
         self._model_id = model_id or config.get("eval_model_id", "")
         self._processor = None
 
     def _load_model(self):
-        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+        from transformers import (
+            AutoProcessor,
+            AutoModelForImageTextToText,
+        )
 
-        self._model = Qwen2VLForConditionalGeneration.from_pretrained(
+        self._processor = AutoProcessor.from_pretrained(
             self._model_id,
-            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+        )
+
+        self._model = AutoModelForImageTextToText.from_pretrained(
+            self._model_id,
+            dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
         )
-        self._processor = AutoProcessor.from_pretrained(
-            self._model_id, trust_remote_code=True
-        )
 
-    def _run_model(self, gen_image, ref_image, criteria: list[dict] = None,
-                   category: str = "bird", task_description: str = "") -> EvaluationResult:
+        self._model.eval()
+
+    def _run_model(
+        self,
+        gen_image,
+        ref_image,
+        criteria: list[dict] = None,
+        category: str = "bird",
+        task_description: str = "",
+    ) -> EvaluationResult:
         """
         评估生成图像
 
@@ -102,17 +124,35 @@ class CriticAgent(BaseAgent):
         返回:
           EvaluationResult — 结构化评估结果
         """
-        # 构建 criteria 文本
+
+        # 默认评估标准
         if criteria is None:
             criteria = [
-                {"name": "identity", "description": "Does the subject's identity match the reference?", "weight": 1},
-                {"name": "viewpoint", "description": "Is the rotation/viewpoint realistic?", "weight": 1},
-                {"name": "quality", "description": "Any artifacts, blurring, deformities?", "weight": 1},
-                {"name": "background", "description": "Is the background realistic?", "weight": 1},
+                {
+                    "name": "identity",
+                    "description": "Does the subject identity match the reference image?",
+                    "weight": 1,
+                },
+                {
+                    "name": "viewpoint",
+                    "description": "Is the new viewpoint geometrically realistic and consistent?",
+                    "weight": 1,
+                },
+                {
+                    "name": "quality",
+                    "description": "Are there artifacts, blur, distortion, or anatomical errors?",
+                    "weight": 1,
+                },
+                {
+                    "name": "background",
+                    "description": "Is the background visually coherent and realistic?",
+                    "weight": 1,
+                },
             ]
 
         criteria_text = "\n".join(
-            f"{i+1}. {c['name']}: {c['description']}" for i, c in enumerate(criteria)
+            f"{i+1}. {c['name']}: {c['description']}"
+            for i, c in enumerate(criteria)
         )
 
         prompt = EVAL_PROMPT_TEMPLATE.format(
@@ -121,76 +161,171 @@ class CriticAgent(BaseAgent):
             criteria_text=criteria_text,
         )
 
+        # Qwen3.5 官方 multimodal messages 格式
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": ref_image},
-                    {"type": "image", "image": gen_image},
-                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image",
+                        "image": ref_image,
+                    },
+                    {
+                        "type": "image",
+                        "image": gen_image,
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
                 ],
             }
         ]
 
-        text = self._processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        inputs = self._processor(
-            text=[text],
-            images=[ref_image, gen_image],
-            padding=True,
+        # 官方推荐方式
+        inputs = self._processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
             return_tensors="pt",
-        ).to(self._model.device)
+        )
+
+        # 自动迁移 tensor 到模型设备
+        for k, v in inputs.items():
+            if torch.is_tensor(v):
+                inputs[k] = v.to(self._model.device)
 
         with torch.inference_mode():
             output_ids = self._model.generate(
-                **inputs, max_new_tokens=512, do_sample=False,
+                **inputs,
+                max_new_tokens=128,
+                do_sample=False,
+                use_cache=True,
             )
 
-        raw = self._processor.decode(
-            output_ids[0][inputs.input_ids.shape[1]:], skip_special_tokens=True
-        ).strip()
+        # 只截取新增 token
+        generated_ids = output_ids[:, inputs["input_ids"].shape[-1]:]
+
+        raw = self._processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0].strip()
 
         return self._parse(raw)
 
     def _parse(self, raw_text: str) -> EvaluationResult:
         """从 VLM 输出中解析结构化结果"""
+
         result = EvaluationResult(raw_output=raw_text)
 
-        # 尝试从 JSON 代码块中提取
-        json_match = re.search(r"```(?:json)?\s*\n?({.*?})\s*\n?```", raw_text, re.DOTALL)
+        # 去掉 think 标签
+        raw_text = re.sub(
+            r"<think>.*?</think>",
+            "",
+            raw_text,
+            flags=re.DOTALL,
+        ).strip()
+
+        # 提取 markdown json block
+        json_match = re.search(
+            r"```(?:json)?\s*\n?({.*?})\s*\n?```",
+            raw_text,
+            re.DOTALL,
+        )
+
         if json_match:
             raw_text = json_match.group(1)
 
-        # 尝试直接解析 JSON
+        # 尝试提取裸 JSON
+        if "{" in raw_text and "}" in raw_text:
+            try:
+                raw_text = raw_text[
+                    raw_text.index("{"): raw_text.rindex("}") + 1
+                ]
+            except Exception:
+                pass
+
+        # 尝试 JSON 解析
         try:
             data = json.loads(raw_text)
-            result.identity_score = float(data.get("identity_score", 0))
-            result.viewpoint_score = float(data.get("viewpoint_score", 0))
-            result.quality_score = float(data.get("quality_score", 0))
-            result.background_score = float(data.get("background_score", 0))
-            result.global_score = float(data.get("global_score", 0))
+
+            result.identity_score = float(
+                data.get("identity_score", 0)
+            )
+
+            result.viewpoint_score = float(
+                data.get("viewpoint_score", 0)
+            )
+
+            result.quality_score = float(
+                data.get("quality_score", 0)
+            )
+
+            result.background_score = float(
+                data.get("background_score", 0)
+            )
+
+            result.global_score = float(
+                data.get("global_score", 0)
+            )
+
             result.issues = data.get("issues", [])
+
             result.suggestions = data.get("suggestions", [])
+
             result.fix_priority = data.get("fix_priority", [])
+
             return result
-        except (json.JSONDecodeError, TypeError):
+
+        except Exception:
             pass
 
-        # 备选: 从文本中正则提取各维度的分数
-        for dim in ["identity", "viewpoint", "quality", "background", "global"]:
-            m = re.search(rf'"{dim}_score"\s*:\s*([\d.]+)', raw_text)
+        # fallback: 正则提取
+        for dim in [
+            "identity",
+            "viewpoint",
+            "quality",
+            "background",
+            "global",
+        ]:
+            m = re.search(
+                rf'"{dim}_score"\s*:\s*([\d.]+)',
+                raw_text,
+            )
+
             if m:
-                setattr(result, f"{dim}_score", float(m.group(1)))
+                setattr(
+                    result,
+                    f"{dim}_score",
+                    float(m.group(1)),
+                )
 
-        # 提取 issues
-        issues_match = re.search(r'"issues"\s*:\s*\[(.*?)\]', raw_text, re.DOTALL)
+        # issues
+        issues_match = re.search(
+            r'"issues"\s*:\s*\[(.*?)\]',
+            raw_text,
+            re.DOTALL,
+        )
+
         if issues_match:
-            result.issues = re.findall(r'"([^"]+)"', issues_match.group(1))
+            result.issues = re.findall(
+                r'"([^"]+)"',
+                issues_match.group(1),
+            )
 
-        # 提取 suggestions
-        sugg_match = re.search(r'"suggestions"\s*:\s*\[(.*?)\]', raw_text, re.DOTALL)
+        # suggestions
+        sugg_match = re.search(
+            r'"suggestions"\s*:\s*\[(.*?)\]',
+            raw_text,
+            re.DOTALL,
+        )
+
         if sugg_match:
-            result.suggestions = re.findall(r'"([^"]+)"', sugg_match.group(1))
+            result.suggestions = re.findall(
+                r'"([^"]+)"',
+                sugg_match.group(1),
+            )
 
         return result

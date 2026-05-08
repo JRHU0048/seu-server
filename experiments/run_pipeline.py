@@ -3,22 +3,24 @@
 
 用法:
   # 使用 CUB 数据集（默认）
-  python experiments/run_pipeline.py
+  CUDA_VISIBLE_DEVICES=2,3 python experiments/run_pipeline.py --use-critic
 
   # 指定任务
-  python experiments/run_pipeline.py --task cub_bird
+  CUDA_VISIBLE_DEVICES=2,3 python experiments/run_pipeline.py --task cub_bird
 
   # 使用 Critic（需先设置 EVAL_MODEL_ID）
-  python experiments/run_pipeline.py --task cub_bird --use-critic
+  CUDA_VISIBLE_DEVICES=2,3 python experiments/run_pipeline.py \
+      --task cub_bird \
+      --use-critic
 
   # 覆盖路径
-  python experiments/run_pipeline.py \
+  CUDA_VISIBLE_DEVICES=2,3 python experiments/run_pipeline.py \
       --task cub_bird \
       --input /path/to/data \
       --output /path/to/output
 
   # 覆盖阈值 / 重试次数
-  python experiments/run_pipeline.py --threshold 8.0 --max-retries 5
+  CUDA_VISIBLE_DEVICES=2,3 python experiments/run_pipeline.py --threshold 8.0 --max-retries 5
 """
 
 import os
@@ -95,12 +97,12 @@ def main():
     # 构建 pipeline 配置
     pipeline_config = {
         "gen_model_id": task.gen_model_id if hasattr(task, "gen_model_id") else "../Qwen-Image-Edit-2511",
-        "eval_model_id": task.eval_model_id if hasattr(task, "eval_model_id") else "",
+        "eval_model_id": task.eval_model_id if hasattr(task, "eval_model_id") else "../Qwen3.5-27B",
         "steps": 28,
         "cfg": 3.5,
         "seed": 42,
         "device_map": "balanced",
-        "max_memory": {0: "46GiB", 1: "46GiB"},
+        "max_memory": {0: "46GiB", 1: "46GiB", 2: "46GiB"},
         "threshold": args.threshold if args.threshold is not None else 7.0,
         "max_retries": args.max_retries if args.max_retries is not None else 3,
         "use_critic": args.use_critic,
